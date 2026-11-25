@@ -3,6 +3,9 @@
 .env.*
 !.env.example
 
+# Generated API keys (written by scripts/seed.py)
+loadtests/keys.json
+
 # Python
 __pycache__/
 *.py[cod]
