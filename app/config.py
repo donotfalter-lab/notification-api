@@ -1,6 +1,6 @@
 from functools import lru_cache
 
-from pydantic import SecretStr
+from pydantic import SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from sqlalchemy import URL
 
@@ -17,6 +17,20 @@ class Settings(BaseSettings):
     postgres_port: int = 5432
 
     db_echo: bool = False
+
+    redis_url: str
+
+    # Bearer token for /admin endpoints.
+    admin_token: SecretStr
+    # How long a valid API key lookup stays cached in Redis.
+    api_key_cache_ttl_seconds: int = 60
+
+    @field_validator("admin_token")
+    @classmethod
+    def _admin_token_long_enough(cls, value: SecretStr) -> SecretStr:
+        if len(value.get_secret_value()) < 16:
+            raise ValueError("ADMIN_TOKEN must be at least 16 characters")
+        return value
 
     @property
     def database_url(self) -> URL:
