@@ -61,3 +61,55 @@ class ApiKeyOut(BaseModel):
 
 class ApiKeyCreated(ApiKeyOut):
     api_key: str = Field(description="The raw key. Shown only once; store it now.")
+
+
+# --- notifications ---
+
+
+class NotificationCreate(BaseModel):
+    customer_id: uuid.UUID
+    subject: str = Field(min_length=1, max_length=255)
+    body: str = Field(min_length=1, max_length=50_000)
+
+
+class NotificationAccepted(BaseModel):
+    id: uuid.UUID
+    status: str
+
+
+class NotificationBatchCreate(BaseModel):
+    notifications: list[NotificationCreate] = Field(min_length=1, max_length=100)
+
+
+class NotificationBatchAccepted(BaseModel):
+    items: list[NotificationAccepted]
+
+
+class NotificationOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    customer_id: uuid.UUID
+    channel: str
+    subject: str
+    body: str
+    status: str
+    attempts: int
+    last_error: str | None
+    created_at: datetime
+    sent_at: datetime | None
+
+
+# --- admin: queue ---
+
+
+class QueueStats(BaseModel):
+    queued: int
+    processing: int
+    delayed: int
+    dead_letter: int
+    workers: int
+
+
+class ReplayResult(BaseModel):
+    replayed: int

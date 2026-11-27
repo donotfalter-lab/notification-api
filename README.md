@@ -18,16 +18,20 @@ Requires Docker with Docker Compose.
    ```
 
    If you already have a `.env` from an earlier phase, compare it with
-   `.env.example` and add any new variables (`REDIS_URL`, `ADMIN_TOKEN`, ...).
+   `.env.example` and add any new variables (`REDIS_URL`, `ADMIN_TOKEN`,
+   `SMTP_*`, `WORKER_*`, ...).
 
-2. Build and start everything. The API waits for Postgres, applies database
-   migrations, then serves on port 8000 with auto-reload:
+2. Build and start everything. Services: `postgres`, `redis`, `mailpit`, `api`
+   (applies database migrations, then serves on port 8000 with auto-reload) and
+   `worker` (sends the emails):
 
    ```bash
    docker compose up --build
    ```
 
    Re-run with `--build` whenever `Dockerfile` or `requirements.txt` changes.
+   The worker doesn't auto-reload: after changing `worker/` code, run
+   `docker compose restart worker`.
 
 3. In a second terminal, load demo data: 5 tenants, 2,000 customers each (all
    `@example.com` addresses), and one API key per tenant. The keys are printed
@@ -35,8 +39,10 @@ Requires Docker with Docker Compose.
    are reused:
 
    ```bash
-   docker compose exec api python scripts/seed.py
+   docker compose exec api python -m scripts.seed
    ```
+
+   (`python scripts/seed.py` works too.)
 
 4. Try it. `/v1` endpoints need a tenant API key in the `X-API-Key` header and
    only ever return that tenant's data:
@@ -48,6 +54,54 @@ Requires Docker with Docker Compose.
 
    Interactive API docs: http://localhost:8000/docs (use **Authorize** to set a key).
 
+5. Send an email. The API saves it, queues it, and answers `202` right away; the
+   worker delivers it a moment later. Open **Mailpit at http://localhost:8025**
+   to see it arrive:
+
+   ```bash
+   curl -X POST localhost:8000/v1/notifications \
+     -H "X-API-Key: ntf_live_..." -H "Content-Type: application/json" \
+     -H "Idempotency-Key: order-1234-shipped" \
+     -d '{"customer_id": "<id from /v1/customers>", "subject": "Your order shipped", "body": "It is on the way."}'
+   ```
+
+## Notifications
+
+| Method | Path | What it does |
+| --- | --- | --- |
+| POST | `/v1/notifications` | Queue one email: `{customer_id, subject, body}`. Returns `202 {id, status}`. |
+| POST | `/v1/notifications/batch` | Queue up to 100: `{"notifications": [...]}`. All-or-nothing. |
+| GET | `/v1/notifications/{id}` | Status (`queued`, `sent`, `failed`), attempts, last error. |
+
+- **Idempotency:** send an `Idempotency-Key` header and repeating the request
+  (same key, same tenant) returns the original notification instead of creating
+  a duplicate. The repeat response carries `Idempotent-Replayed: true`.
+- The customer must belong to your tenant, otherwise `422 Customer not found`.
+- If Redis is down, the API answers `503` and saves nothing, so retrying is safe.
+
+## The email worker
+
+`worker/` runs as its own container (same image, `python -m worker.main`):
+
+- **Reliable queue:** it claims a job with `BLMOVE` from `notifications:queue`
+  into its own processing list and only removes it once the job is finished. If a
+  worker crashes, its heartbeat expires (30s) and another worker puts its jobs back.
+- **Concurrency:** up to `WORKER_CONCURRENCY` (default 20) sends at once.
+- **Retries:** a failed send is retried after 1s, 2s, 4s, 8s (`WORKER_RETRY_BASE_SECONDS`,
+  with jitter) using a Redis sorted set. After `WORKER_MAX_ATTEMPTS` (5) the
+  notification is marked `failed` and moved to the dead-letter list.
+- **Fake provider:** `SMTP_DELAY_MS` adds random latency and `SMTP_FAIL_RATE`
+  (default 2%) fails sends on purpose, so you can watch retries in the logs.
+- **Graceful shutdown:** on `docker compose stop worker` it stops taking jobs and
+  finishes the ones in flight first.
+- **Delivery is at-least-once:** if a worker dies between sending and recording
+  the send, that email is sent again after recovery.
+
+```bash
+docker compose logs -f worker              # picked up / sent / retry / failed lines
+docker compose up -d --scale worker=3      # more workers share the same queue
+```
+
 ## Admin endpoints
 
 Protected by `Authorization: Bearer $ADMIN_TOKEN`:
@@ -57,6 +111,8 @@ Protected by `Authorization: Bearer $ADMIN_TOKEN`:
 | POST | `/admin/tenants` | Create a tenant: `{"name": "...", "plan": "free" \| "pro"}` |
 | POST | `/admin/tenants/{id}/api-keys` | Create a key. The raw key is in the response **once only**; only its hash is stored. |
 | POST | `/admin/api-keys/{id}/revoke` | Revoke a key. It stops working immediately. |
+| GET | `/admin/queue/stats` | Counts: `queued`, `processing`, `delayed`, `dead_letter`, `workers`. |
+| POST | `/admin/dead-letter/replay` | Put every dead-lettered notification back on the queue with fresh attempts. |
 
 ```bash
 curl -X POST localhost:8000/admin/tenants \

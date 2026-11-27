@@ -11,6 +11,8 @@ os.environ.setdefault("POSTGRES_DB", "test")
 os.environ.setdefault("POSTGRES_HOST", "localhost")
 os.environ.setdefault("REDIS_URL", "redis://localhost:6379/0")
 os.environ.setdefault("ADMIN_TOKEN", "test-admin-token-0123456789")
+os.environ.setdefault("SMTP_HOST", "localhost")
+os.environ.setdefault("SMTP_FROM", "notifications@example.com")
 
 import fakeredis  # noqa: E402
 import pytest  # noqa: E402
@@ -96,14 +98,14 @@ class Api:
         assert r.status_code == 201, r.text
         return r.json()
 
-    def add_customer(self, tenant_id: str, email: str) -> str:
+    def add_customer(self, tenant_id: str, email: str, name: str = "Test Customer") -> str:
         customer_id = uuid.uuid4()
 
         async def insert():
             async with self.engine.begin() as conn:
                 await conn.execute(
                     Customer.__table__.insert().values(
-                        id=customer_id, tenant_id=uuid.UUID(tenant_id), email=email, name="Test Customer"
+                        id=customer_id, tenant_id=uuid.UUID(tenant_id), email=email, name=name
                     )
                 )
 
@@ -112,6 +114,31 @@ class Api:
 
     def redis(self) -> fakeredis.FakeAsyncRedis:
         return fakeredis.FakeAsyncRedis(server=self.redis_server, decode_responses=True)
+
+    def run(self, fn):
+        """Run `async fn(redis)` against the shared fake Redis and return its result."""
+
+        async def go():
+            return await fn(self.redis())
+
+        return asyncio.run(go())
+
+    def queued_ids(self) -> list[str]:
+        """Ids waiting in the Redis queue, oldest first."""
+        return list(reversed(self.run(lambda r: r.lrange("notifications:queue", 0, -1))))
+
+    def notification_rows(self) -> list[dict]:
+        async def rows():
+            async with self.engine.connect() as conn:
+                result = await conn.execute(text("SELECT * FROM notifications ORDER BY created_at"))
+                return [dict(r._mapping) for r in result]
+
+        return asyncio.run(rows())
+
+    def tenant_with_key(self, name: str) -> tuple[dict, dict]:
+        """Create a tenant and return (tenant, X-API-Key headers)."""
+        tenant = self.create_tenant(name)
+        return tenant, {"X-API-Key": self.create_key(tenant["id"])["api_key"]}
 
 
 @pytest.fixture

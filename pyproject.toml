@@ -5,3 +5,6 @@ requires-python = ">=3.12"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# No .pytest_cache: tests run as root in the container, which would leave
+# root-owned files in the bind-mounted project folder.
+addopts = "-p no:cacheprovider"

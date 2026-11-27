@@ -113,6 +113,8 @@ class Notification(Base):
         Integer, nullable=False, server_default="0"
     )
     last_error: Mapped[str | None] = mapped_column(Text)
+    # Client-supplied Idempotency-Key header; unique per tenant when present.
+    idempotency_key: Mapped[str | None] = mapped_column(String(255))
     created_at: Mapped[datetime] = _created_at()
     sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
@@ -123,4 +125,11 @@ class Notification(Base):
         ),
         Index("ix_notifications_tenant_id_created_at", "tenant_id", "created_at"),
         Index("ix_notifications_customer_id", "customer_id"),
+        Index(
+            "ix_notifications_tenant_id_idempotency_key",
+            "tenant_id",
+            "idempotency_key",
+            unique=True,
+            postgresql_where=text("idempotency_key IS NOT NULL"),
+        ),
     )
