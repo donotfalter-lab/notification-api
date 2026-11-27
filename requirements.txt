@@ -7,9 +7,10 @@ pydantic==2.10.3
 pydantic-settings==2.6.1
 faker==33.1.0
 redis==5.2.1
+aiosmtplib==3.0.2
 
 # tests
 pytest==8.3.4
 httpx==0.28.1
 aiosqlite==0.20.0
-fakeredis==2.26.2
+fakeredis[lua]==2.26.2

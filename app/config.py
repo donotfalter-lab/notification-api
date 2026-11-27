@@ -1,12 +1,12 @@
 from functools import lru_cache
 
-from pydantic import SecretStr, field_validator
+from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from sqlalchemy import URL
 
 
 class Settings(BaseSettings):
-    """All configuration comes from environment variables (or a local .env)."""
+    """API settings. All configuration comes from environment variables (or a local .env)."""
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
@@ -44,6 +44,33 @@ class Settings(BaseSettings):
         )
 
 
+class WorkerSettings(Settings):
+    """Extra settings only the email worker needs (the API never loads these)."""
+
+    smtp_host: str
+    smtp_port: int = 1025
+    smtp_from: str
+    smtp_timeout_seconds: float = Field(default=10, gt=0)
+
+    # Fake a real email provider: random latency up to this many ms...
+    smtp_delay_ms: int = Field(default=50, ge=0)
+    # ...and this share of sends fail on purpose (0.0 - 1.0).
+    smtp_fail_rate: float = Field(default=0.02, ge=0, le=1)
+
+    worker_concurrency: int = Field(default=20, ge=1)
+    worker_max_attempts: int = Field(default=5, ge=1)
+    # Retry n waits base * 2^(n-1) seconds (plus jitter), capped at worker_retry_max_seconds.
+    worker_retry_base_seconds: float = Field(default=1, gt=0)
+    worker_retry_max_seconds: float = Field(default=300, gt=0)
+    # On SIGTERM, how long to wait for in-flight jobs before giving up.
+    worker_shutdown_timeout_seconds: float = Field(default=25, gt=0)
+
+
 @lru_cache
 def get_settings() -> Settings:
     return Settings()
+
+
+@lru_cache
+def get_worker_settings() -> WorkerSettings:
+    return WorkerSettings()

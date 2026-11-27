@@ -88,6 +88,13 @@ def write_keys_file(entries: list[dict]) -> None:
     KEYS_FILE.parent.mkdir(parents=True, exist_ok=True)
     KEYS_FILE.write_text(json.dumps(entries, indent=2) + "\n")
     os.chmod(KEYS_FILE, 0o600)  # owner-only: these are credentials
+    # In docker the seed runs as root on the bind-mounted project folder; hand the
+    # file (and loadtests/, if we just created it) to whoever owns the project
+    # (you, on the host) so you can actually read it.
+    if os.geteuid() == 0:
+        project = KEYS_FILE.parent.parent.stat()
+        for path in (KEYS_FILE.parent, KEYS_FILE):
+            os.chown(path, project.st_uid, project.st_gid)
 
 
 async def seed() -> None:

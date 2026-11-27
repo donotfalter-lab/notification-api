@@ -10,11 +10,36 @@ services:
     command: >
       sh -c "alembic upgrade head &&
              uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"
+    healthcheck:
+      # Healthy once migrations have run and the API answers (the worker waits for this).
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=2)"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
+
+  worker:
+    build: .
+    env_file: .env
+    # Same image as the api, different command. Exec form so the worker is PID 1
+    # and receives SIGTERM directly for a graceful shutdown.
+    command: ["python", "-m", "worker.main"]
+    volumes:
+      - .:/app
+    # Time to finish in-flight jobs before Docker force-kills it.
+    stop_grace_period: 30s
+    depends_on:
+      api:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      mailpit:
+        condition: service_started
 
   postgres:
     image: postgres:16
@@ -34,6 +59,12 @@ services:
       interval: 5s
       timeout: 3s
       retries: 10
+
+  mailpit:
+    image: axllent/mailpit
+    ports:
+      - "8025:8025"  # web UI: http://localhost:8025
+      - "1025:1025"  # SMTP
 
 volumes:
   postgres_data:

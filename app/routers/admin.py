@@ -9,8 +9,17 @@ from app.cache import get_redis
 from app.db import get_session
 from app.deps import require_admin
 from app.models import Tenant
-from app.schemas import ApiKeyCreate, ApiKeyCreated, ApiKeyOut, TenantCreate, TenantOut
+from app.schemas import (
+    ApiKeyCreate,
+    ApiKeyCreated,
+    ApiKeyOut,
+    QueueStats,
+    ReplayResult,
+    TenantCreate,
+    TenantOut,
+)
 from app.services import api_keys as api_key_service
+from app.services import queue
 
 router = APIRouter(prefix="/admin", tags=["admin"], dependencies=[Depends(require_admin)])
 
@@ -55,3 +64,16 @@ async def revoke_api_key(
     if api_key is None:
         raise HTTPException(status_code=404, detail="API key not found")
     return api_key
+
+
+@router.get("/queue/stats", response_model=QueueStats)
+async def queue_stats(redis: Redis = Depends(get_redis)):
+    return await queue.stats(redis)
+
+
+@router.post("/dead-letter/replay", response_model=ReplayResult)
+async def replay_dead_letter(
+    session: AsyncSession = Depends(get_session),
+    redis: Redis = Depends(get_redis),
+):
+    return ReplayResult(replayed=await queue.replay_dead_letter(session, redis))
