@@ -5,8 +5,9 @@ from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.cache import get_redis
+from app.config import get_settings
 from app.db import get_session
-from app.deps import get_current_tenant
+from app.deps import enforce_rate_limit, get_current_tenant
 from app.schemas import (
     NotificationAccepted,
     NotificationBatchAccepted,
@@ -16,9 +17,12 @@ from app.schemas import (
 )
 from app.services import notifications as notification_service
 from app.services.api_keys import CurrentTenant
+from app.services.limits import reserve_email_quota
 from app.services.notifications import QueueUnavailable, UnknownCustomers
 
-router = APIRouter(prefix="/v1/notifications", tags=["notifications"])
+router = APIRouter(
+    prefix="/v1/notifications", tags=["notifications"], dependencies=[Depends(enforce_rate_limit)]
+)
 
 
 def _unknown_customers(exc: UnknownCustomers) -> HTTPException:
@@ -51,16 +55,30 @@ async def create_notification(
     session: AsyncSession = Depends(get_session),
     redis: Redis = Depends(get_redis),
 ):
+    # A repeat of an earlier request sends nothing new: answer it before touching the quota.
+    if idempotency_key:
+        original = await notification_service.find_by_idempotency_key(session, tenant.id, idempotency_key)
+        if original is not None:
+            response.headers["Idempotent-Replayed"] = "true"
+            return NotificationAccepted(id=original.id, status=original.status)
+
+    quota = await reserve_email_quota(redis, tenant.id, get_settings().plan_limits(tenant.plan), 1)
     try:
         accepted = await notification_service.create_notification(
             session, redis, tenant.id, body, idempotency_key
         )
     except UnknownCustomers as exc:
+        await quota.refund()
         raise _unknown_customers(exc)
     except QueueUnavailable:
+        await quota.refund()
         raise _queue_unavailable()
+    except BaseException:
+        await quota.refund()
+        raise
 
-    if accepted.replayed:
+    if accepted.replayed:  # lost a race with an identical request; that one was counted
+        await quota.refund()
         response.headers["Idempotent-Replayed"] = "true"
     return NotificationAccepted(id=accepted.id, status=accepted.status)
 
@@ -72,12 +90,21 @@ async def create_notification_batch(
     session: AsyncSession = Depends(get_session),
     redis: Redis = Depends(get_redis),
 ):
+    # Every email in the batch counts; the whole batch is rejected if it doesn't fit.
+    quota = await reserve_email_quota(
+        redis, tenant.id, get_settings().plan_limits(tenant.plan), len(body.notifications)
+    )
     try:
         accepted = await notification_service.create_batch(session, redis, tenant.id, body.notifications)
     except UnknownCustomers as exc:
+        await quota.refund()
         raise _unknown_customers(exc)
     except QueueUnavailable:
+        await quota.refund()
         raise _queue_unavailable()
+    except BaseException:
+        await quota.refund()
+        raise
     return NotificationBatchAccepted(
         items=[NotificationAccepted(id=a.id, status=a.status) for a in accepted]
     )

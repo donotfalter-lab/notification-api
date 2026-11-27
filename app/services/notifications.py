@@ -131,6 +131,16 @@ async def create_batch(
     return [Accepted(id=i, status="queued") for i in ids]
 
 
+async def find_by_idempotency_key(
+    session: AsyncSession, tenant_id: uuid.UUID, idempotency_key: str
+) -> Notification | None:
+    return await session.scalar(
+        select(Notification).where(
+            Notification.tenant_id == tenant_id, Notification.idempotency_key == idempotency_key
+        )
+    )
+
+
 async def get_notification(
     session: AsyncSession, tenant_id: uuid.UUID, notification_id: uuid.UUID
 ) -> Notification | None:
