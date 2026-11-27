@@ -4,12 +4,12 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import get_session
-from app.deps import get_current_tenant
+from app.deps import enforce_rate_limit, get_current_tenant
 from app.schemas import CustomerOut, CustomerPage
 from app.services import customers as customer_service
 from app.services.api_keys import CurrentTenant
 
-router = APIRouter(prefix="/v1/customers", tags=["customers"])
+router = APIRouter(prefix="/v1/customers", tags=["customers"], dependencies=[Depends(enforce_rate_limit)])
 
 
 @router.get("", response_model=CustomerPage)

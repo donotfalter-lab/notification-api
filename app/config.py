@@ -1,8 +1,17 @@
+from dataclasses import dataclass
 from functools import lru_cache
 
 from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from sqlalchemy import URL
+
+
+@dataclass(frozen=True)
+class PlanLimits:
+    plan: str
+    rps: float
+    burst: int
+    daily_email_quota: int
 
 
 class Settings(BaseSettings):
@@ -24,6 +33,22 @@ class Settings(BaseSettings):
     admin_token: SecretStr
     # How long a valid API key lookup stays cached in Redis.
     api_key_cache_ttl_seconds: int = 60
+
+    # Per-plan limits. Rate limit = token bucket: refills at RPS tokens/second
+    # and holds at most BURST tokens; each /v1 request spends one token.
+    rate_limit_free_rps: float = Field(default=10, gt=0)
+    rate_limit_free_burst: int = Field(default=20, ge=1)
+    rate_limit_pro_rps: float = Field(default=100, gt=0)
+    rate_limit_pro_burst: int = Field(default=200, ge=1)
+    # Emails per tenant per UTC day (each email in a batch counts).
+    daily_email_quota_free: int = Field(default=5_000, ge=0)
+    daily_email_quota_pro: int = Field(default=100_000, ge=0)
+
+    def plan_limits(self, plan: str) -> "PlanLimits":
+        """Limits for a plan; unknown plans get the free limits."""
+        if plan == "pro":
+            return PlanLimits("pro", self.rate_limit_pro_rps, self.rate_limit_pro_burst, self.daily_email_quota_pro)
+        return PlanLimits("free", self.rate_limit_free_rps, self.rate_limit_free_burst, self.daily_email_quota_free)
 
     @field_validator("admin_token")
     @classmethod

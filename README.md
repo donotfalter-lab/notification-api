@@ -79,6 +79,30 @@ Requires Docker with Docker Compose.
 - The customer must belong to your tenant, otherwise `422 Customer not found`.
 - If Redis is down, the API answers `503` and saves nothing, so retrying is safe.
 
+## Rate limits and quotas
+
+Every `/v1` request is limited per tenant, based on the tenant's plan. Change
+the numbers in `.env` (`RATE_LIMIT_*`, `DAILY_EMAIL_QUOTA_*`).
+
+| Plan | Requests | Burst | Emails per day |
+| --- | --- | --- | --- |
+| free | 10/s | 20 | 5,000 |
+| pro | 100/s | 200 | 100,000 |
+
+- **Token bucket:** each request spends a token. The bucket holds up to *burst*
+  tokens and refills at *requests/s*. Check and spend happen in one Lua script in
+  Redis, so the limit holds across any number of API containers.
+- **Headers on every `/v1` response:** `X-RateLimit-Limit` (bucket size),
+  `X-RateLimit-Remaining` (tokens left), `X-RateLimit-Reset` (seconds until the
+  bucket is full again).
+- **Over the limit:** `429 {"error": "...", "retry_after_seconds": 0.1}` plus a
+  `Retry-After` header (whole seconds).
+- **Daily email quota:** counts emails, not requests (a batch of 50 uses 50) and
+  resets at midnight UTC. A batch that doesn't fit is rejected whole. Repeated
+  `Idempotency-Key` requests and rejected requests don't use quota.
+- **If Redis is down,** limits are not enforced (fail open) and the API logs a
+  warning, so an outage of the limiter doesn't take the API down with it.
+
 ## The email worker
 
 `worker/` runs as its own container (same image, `python -m worker.main`):
