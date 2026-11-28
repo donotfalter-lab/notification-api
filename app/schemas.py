@@ -113,3 +113,30 @@ class QueueStats(BaseModel):
 
 class ReplayResult(BaseModel):
     replayed: int
+
+
+# --- admin: delivery stats ---
+
+
+class LatencyMs(BaseModel):
+    p50: float | None
+    p95: float | None
+    p99: float | None
+    max: float | None
+
+
+class TenantDeliveryStats(BaseModel):
+    tenant_id: uuid.UUID
+    tenant: str
+    plan: str
+    created: int = Field(description="Notifications created in the window")
+    sent: int
+    pending: int = Field(description="Still queued (includes ones waiting to retry)")
+    failed: int
+    latency_ms: LatencyMs = Field(description="sent_at - created_at, over sent notifications only")
+
+
+class DeliveryStats(BaseModel):
+    window_minutes: int
+    since: datetime | None = Field(default=None, description="Set when the window was given as a start time")
+    tenants: list[TenantDeliveryStats]

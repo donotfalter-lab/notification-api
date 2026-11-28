@@ -1,9 +1,12 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from functools import lru_cache
 
 from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from sqlalchemy import URL
+
+
+LOADTEST_DAILY_EMAIL_QUOTA = 10_000_000
 
 
 @dataclass(frozen=True)
@@ -44,11 +47,19 @@ class Settings(BaseSettings):
     daily_email_quota_free: int = Field(default=5_000, ge=0)
     daily_email_quota_pro: int = Field(default=100_000, ge=0)
 
+    # Load testing: every plan's daily email quota becomes LOADTEST_DAILY_EMAIL_QUOTA,
+    # so load tests measure the queue, not the quota. Rate limits still apply.
+    loadtest_mode: bool = False
+
     def plan_limits(self, plan: str) -> "PlanLimits":
         """Limits for a plan; unknown plans get the free limits."""
         if plan == "pro":
-            return PlanLimits("pro", self.rate_limit_pro_rps, self.rate_limit_pro_burst, self.daily_email_quota_pro)
-        return PlanLimits("free", self.rate_limit_free_rps, self.rate_limit_free_burst, self.daily_email_quota_free)
+            limits = PlanLimits("pro", self.rate_limit_pro_rps, self.rate_limit_pro_burst, self.daily_email_quota_pro)
+        else:
+            limits = PlanLimits("free", self.rate_limit_free_rps, self.rate_limit_free_burst, self.daily_email_quota_free)
+        if self.loadtest_mode:
+            limits = replace(limits, daily_email_quota=LOADTEST_DAILY_EMAIL_QUOTA)
+        return limits
 
     @field_validator("admin_token")
     @classmethod

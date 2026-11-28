@@ -1,3 +1,4 @@
+import logging
 import math
 from contextlib import asynccontextmanager
 
@@ -5,13 +6,22 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
 from app.cache import redis_client
+from app.config import LOADTEST_DAILY_EMAIL_QUOTA, get_settings
 from app.db import engine
 from app.routers import admin, customers, health, notifications
 from app.services.limits import LimitExceeded
 
 
+logger = logging.getLogger("app")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    if get_settings().loadtest_mode:
+        logger.warning(
+            "LOADTEST_MODE is on: every daily email quota is %s. Turn it off outside load tests.",
+            f"{LOADTEST_DAILY_EMAIL_QUOTA:,}",
+        )
     yield
     await redis_client.aclose()
     await engine.dispose()

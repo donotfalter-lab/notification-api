@@ -66,5 +66,24 @@ services:
       - "8025:8025"  # web UI: http://localhost:8025
       - "1025:1025"  # SMTP
 
+  # Load tests. Not started by `docker compose up`; run on demand:
+  #   docker compose run --rm k6 run /loadtests/noisy_neighbor.js
+  k6:
+    image: grafana/k6:0.54.0
+    profiles: ["loadtest"]
+    # keys.json is owner-only (it holds API keys); the image's default user can't read it.
+    user: "0:0"
+    environment:
+      API_URL: http://api:8000
+      K6_LOG_FORMAT: raw  # print the delivery report as a readable table
+
+      # Only this one secret (read from .env): used to fetch delivery stats at the end.
+      ADMIN_TOKEN: ${ADMIN_TOKEN:?set ADMIN_TOKEN in .env}
+    volumes:
+      - ./loadtests:/loadtests
+    depends_on:
+      api:
+        condition: service_healthy
+
 volumes:
   postgres_data:
