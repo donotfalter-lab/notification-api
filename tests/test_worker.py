@@ -191,6 +191,25 @@ def blocking_claim(monkeypatch):
     monkeypatch.setattr(queue, "claim", claim)
 
 
+def test_live_worker_wrongly_reaped_re_registers_on_next_heartbeat(api):
+    async def go(redis):
+        await queue.register_worker(redis, "alive", ttl_seconds=30)
+        # Its heartbeat lapsed (e.g. the machine slept) and another worker reaped it.
+        await redis.delete(queue.heartbeat_key("alive"))
+        await queue.reap_dead_workers(redis, self_id="other")
+        reaped = await queue.stats(redis)
+
+        re_added = await queue.heartbeat(redis, "alive", ttl_seconds=30)
+        healed = await queue.stats(redis)
+        again = await queue.heartbeat(redis, "alive", ttl_seconds=30)
+        return reaped["workers"], re_added, healed["workers"], again
+
+    reaped, re_added, healed, again = api.run(go)
+    assert reaped == 0  # this was the bug: stuck at 0 while the worker kept running
+    assert re_added is True and healed == 1
+    assert again is False  # normal heartbeats don't report a re-registration
+
+
 def test_shutdown_finishes_in_flight_jobs(api, blocking_claim):
     queue_one(api)
 

@@ -10,7 +10,8 @@ Safe to re-run:
   otherwise a new key is created for that tenant.
 
 All emails use the reserved example.com domain, so nothing can reach a real inbox.
-Raw API keys are written to loadtests/keys.json (gitignored) for the k6 load tests.
+Raw API keys and 10 customer ids per tenant are written to loadtests/keys.json
+(gitignored) for the k6 load tests.
 """
 
 import asyncio
@@ -24,7 +25,7 @@ from pathlib import Path
 from faker import Faker
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
-from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, create_async_engine
 
 from app.config import get_settings
 from app.models import ApiKey, Customer, Tenant
@@ -39,6 +40,7 @@ TENANTS = [
 ]
 CUSTOMERS_PER_TENANT = 2_000
 SEED_KEY_NAME = "seed"
+CUSTOMER_IDS_PER_TENANT = 10  # written to keys.json for the k6 load tests
 KEYS_FILE = Path(__file__).resolve().parent.parent / "loadtests" / "keys.json"
 
 
@@ -46,11 +48,11 @@ def _slug(value: str) -> str:
     return re.sub(r"[^a-z0-9]", "", value.lower())
 
 
-def build_customers(tenant_id: uuid.UUID, seed: int) -> list[dict]:
+def build_customers(tenant_id: uuid.UUID, seed: int, count: int = CUSTOMERS_PER_TENANT) -> list[dict]:
     fake = Faker()
     fake.seed_instance(seed)
     rows = []
-    for n in range(CUSTOMERS_PER_TENANT):
+    for n in range(count):
         first, last = fake.first_name(), fake.last_name()
         rows.append(
             {
@@ -64,10 +66,10 @@ def build_customers(tenant_id: uuid.UUID, seed: int) -> list[dict]:
     return rows
 
 
-def load_existing_keys() -> dict[str, str]:
+def load_existing_keys(keys_file: Path) -> dict[str, str]:
     """Return {tenant_name: raw_key} from a previous run, if any."""
     try:
-        entries = json.loads(KEYS_FILE.read_text())
+        entries = json.loads(keys_file.read_text())
         return {e["tenant"]: e["api_key"] for e in entries}
     except (FileNotFoundError, json.JSONDecodeError, KeyError, TypeError):
         return {}
@@ -84,22 +86,39 @@ async def key_is_active(session: AsyncSession, tenant_id: uuid.UUID, raw_key: st
     return found is not None
 
 
-def write_keys_file(entries: list[dict]) -> None:
-    KEYS_FILE.parent.mkdir(parents=True, exist_ok=True)
-    KEYS_FILE.write_text(json.dumps(entries, indent=2) + "\n")
-    os.chmod(KEYS_FILE, 0o600)  # owner-only: these are credentials
+async def sample_customer_ids(session: AsyncSession, tenant_id: uuid.UUID) -> list[str]:
+    """A stable handful of this tenant's customers for load tests to send to."""
+    ids = await session.scalars(
+        select(Customer.id)
+        .where(Customer.tenant_id == tenant_id)
+        .order_by(Customer.email)
+        .limit(CUSTOMER_IDS_PER_TENANT)
+    )
+    return [str(i) for i in ids]
+
+
+def write_keys_file(entries: list[dict], keys_file: Path) -> None:
+    keys_file.parent.mkdir(parents=True, exist_ok=True)
+    keys_file.write_text(json.dumps(entries, indent=2) + "\n")
+    os.chmod(keys_file, 0o600)  # owner-only: these are credentials
     # In docker the seed runs as root on the bind-mounted project folder; hand the
     # file (and loadtests/, if we just created it) to whoever owns the project
     # (you, on the host) so you can actually read it.
     if os.geteuid() == 0:
-        project = KEYS_FILE.parent.parent.stat()
-        for path in (KEYS_FILE.parent, KEYS_FILE):
+        project = keys_file.parent.parent.stat()
+        for path in (keys_file.parent, keys_file):
             os.chown(path, project.st_uid, project.st_gid)
 
 
-async def seed() -> None:
+async def seed(
+    engine: AsyncEngine | None = None,
+    keys_file: Path = KEYS_FILE,
+    customers_per_tenant: int = CUSTOMERS_PER_TENANT,
+) -> list[dict]:
+    """Seed the database and write keys_file. Returns the keys.json entries."""
     started = time.perf_counter()
-    engine = create_async_engine(get_settings().database_url)
+    own_engine = engine is None
+    engine = engine or create_async_engine(get_settings().database_url)
 
     async with AsyncSession(engine, expire_on_commit=False) as session:
         # Tenants
@@ -116,7 +135,7 @@ async def seed() -> None:
 
         # Customers
         for i, (name, _) in enumerate(TENANTS):
-            rows = build_customers(tenant_ids[name], seed=1_000 + i)
+            rows = build_customers(tenant_ids[name], seed=1_000 + i, count=customers_per_tenant)
             result = await session.execute(
                 pg_insert(Customer)
                 .values(rows)
@@ -126,9 +145,9 @@ async def seed() -> None:
         await session.commit()
 
         # API keys: one per tenant, reused across runs while still valid.
-        existing = load_existing_keys()
+        existing = load_existing_keys(keys_file)
         entries = []
-        print("\nAPI keys (also written to loadtests/keys.json):")
+        print(f"\nAPI keys (also written to {keys_file.name}, with {CUSTOMER_IDS_PER_TENANT} customer ids each):")
         for name, plan in TENANTS:
             tenant_id = tenant_ids[name]
             raw_key = existing.get(name)
@@ -137,12 +156,22 @@ async def seed() -> None:
             else:
                 _, raw_key = await create_api_key(session, tenant_id, SEED_KEY_NAME)
                 status = "created"
-            entries.append({"tenant": name, "plan": plan, "tenant_id": str(tenant_id), "api_key": raw_key})
+            entries.append(
+                {
+                    "tenant": name,
+                    "plan": plan,
+                    "tenant_id": str(tenant_id),
+                    "api_key": raw_key,
+                    "customer_ids": await sample_customer_ids(session, tenant_id),
+                }
+            )
             print(f"  {name:<9} {plan:<4} {raw_key}  ({status})")
 
-    write_keys_file(entries)
-    await engine.dispose()
+    write_keys_file(entries, keys_file)
+    if own_engine:
+        await engine.dispose()
     print(f"\ndone in {time.perf_counter() - started:.1f}s")
+    return entries
 
 
 if __name__ == "__main__":

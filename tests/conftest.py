@@ -29,6 +29,12 @@ from app.main import app  # noqa: E402
 from app.models import Base, Customer  # noqa: E402
 
 
+@pytest.fixture(autouse=True)
+def _loadtest_mode_off(monkeypatch):
+    """Tests assume normal quotas, even if .env has LOADTEST_MODE=true for a load test."""
+    monkeypatch.setattr(get_settings(), "loadtest_mode", False)
+
+
 @pytest.fixture
 def client():
     with TestClient(app) as c:

@@ -137,12 +137,35 @@ Protected by `Authorization: Bearer $ADMIN_TOKEN`:
 | POST | `/admin/api-keys/{id}/revoke` | Revoke a key. It stops working immediately. |
 | GET | `/admin/queue/stats` | Counts: `queued`, `processing`, `delayed`, `dead_letter`, `workers`. |
 | POST | `/admin/dead-letter/replay` | Put every dead-lettered notification back on the queue with fresh attempts. |
+| GET | `/admin/stats/delivery?minutes=5` | Per tenant: count, and p50/p95/p99 of delivery latency (`sent_at - created_at`) for notifications created in the last N minutes (or `?since=<ISO time>`). |
 
 ```bash
 curl -X POST localhost:8000/admin/tenants \
   -H "Authorization: Bearer $ADMIN_TOKEN" -H "Content-Type: application/json" \
   -d '{"name": "wayne", "plan": "pro"}'
 ```
+
+## Load testing (k6)
+
+k6 runs as a compose service (profile `loadtest`, so `docker compose up` doesn't
+start it). Scripts live in `loadtests/` and read API keys and customer ids from
+`loadtests/keys.json`, written by the seed.
+
+Set `LOADTEST_MODE=true` in `.env` first: it raises every daily email quota to
+10 million, so the test measures the queue rather than hitting the quota.
+Rate limits still apply. Turn it back off afterwards.
+
+```bash
+docker compose up -d --force-recreate api                    # pick up LOADTEST_MODE
+docker compose exec api python -m scripts.seed               # keys + customer ids
+docker compose run --rm k6 run /loadtests/noisy_neighbor.js  # 3 minutes + drain
+```
+
+**Noisy neighbor** (`noisy_neighbor.js`): acme sends batches of 100 at 5/s
+(500 emails/s) while initech, umbrella and hooli each send 2 single emails/s.
+When the load stops it waits for the queue to drain, then prints delivery
+latency per tenant from `/admin/stats/delivery`. Options: `-e NOISY=off`
+(baseline without acme), `-e DURATION=30s`, `-e DRAIN_TIMEOUT=600`.
 
 ## Running tests
 

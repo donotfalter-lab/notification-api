@@ -188,7 +188,12 @@ class Worker:
     async def heartbeat_and_reap(self) -> None:
         while not self.stopping.is_set():
             try:
-                await queue.heartbeat(self.redis, self.id, HEARTBEAT_TTL_SECONDS)
+                if await queue.heartbeat(self.redis, self.id, HEARTBEAT_TTL_SECONDS):
+                    logger.warning(
+                        "worker %s was missing from the worker registry (presumed dead after a "
+                        "missed heartbeat, or Redis lost it); re-registered",
+                        self.id,
+                    )
                 for dead_id, moved in (await queue.reap_dead_workers(self.redis, self.id)).items():
                     logger.warning("recovered %d job(s) from dead worker %s", moved, dead_id)
             except RedisError as exc:

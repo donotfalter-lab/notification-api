@@ -133,8 +133,15 @@ async def register_worker(redis: Redis, worker_id: str, ttl_seconds: int) -> Non
     await pipe.execute()
 
 
-async def heartbeat(redis: Redis, worker_id: str, ttl_seconds: int) -> None:
-    await redis.set(heartbeat_key(worker_id), "1", ex=ttl_seconds)
+async def heartbeat(redis: Redis, worker_id: str, ttl_seconds: int) -> bool:
+    """Refresh the heartbeat and (re-)register. Returns True if the worker had to be
+    added back to the registry: another worker presumed it dead (e.g. after the
+    machine slept and heartbeats expired) or Redis lost the set."""
+    pipe = redis.pipeline(transaction=True)
+    pipe.sadd(WORKERS, worker_id)
+    pipe.set(heartbeat_key(worker_id), "1", ex=ttl_seconds)
+    added, _ = await pipe.execute()
+    return bool(added)
 
 
 async def requeue_processing(redis: Redis, worker_id: str) -> int:
